@@ -1,8 +1,14 @@
 /**
- * CLI for interacting with proofpass contract
+ * CLI for interacting with the proofpass contract.
+ *
+ * Plays both roles for the demo: "Prove eligibility" is the applicant
+ * (enters a birth year, which never leaves this process); "Check eligibility"
+ * is the verifier (reads only the pass/fail boolean off-chain via the
+ * indexer, keyed by a pseudonymous applicant id).
  */
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
+import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -18,14 +24,21 @@ import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config
 import { resolveNetwork, getOrCreateWallet, formatWalletBackupNotice, getDeployment } from './network';
 import { createWallet, persistWalletState, unshieldedToken, type WalletContext } from './wallet';
 import { CompiledContract } from '@midnight-ntwrk/midnight-js-protocol/compact-js';
+import {
+  createProofPassPrivateState,
+  witnesses,
+  encodeIsoDate,
+  todayIso,
+  type ProofPassPrivateState,
+} from '../contracts/witnesses';
 
 // Enable WebSocket for GraphQL subscriptions
 // @ts-expect-error Required for wallet sync
 globalThis.WebSocket = WebSocket;
 
 // Must match the privateStateId used at deploy time so the CLI reconnects to
-// the same private state. The hello-world contract has no witnesses (empty state).
-const PRIVATE_STATE_ID = 'helloWorldPrivateState';
+// the same private state.
+const PRIVATE_STATE_ID = 'proofpassPrivateState';
 
 const { network, config: networkConfig } = resolveNetwork();
 const WALLET = getOrCreateWallet(network);
@@ -36,7 +49,7 @@ const SEED = WALLET.seed;
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const zkConfigPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'hello-world');
+const zkConfigPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'proofpass');
 
 // Load compiled contract
 const contractPath = path.join(zkConfigPath, 'contract', 'index.js');
@@ -47,12 +60,24 @@ if (!fs.existsSync(contractPath)) {
   process.exit(1);
 }
 
-const HelloWorld = await import(pathToFileURL(contractPath).href);
+const ProofPass = await import(pathToFileURL(contractPath).href);
 
-const compiledContract = CompiledContract.make('hello-world', HelloWorld.Contract).pipe(
-  CompiledContract.withVacantWitnesses,
-  CompiledContract.withCompiledFileAssets(zkConfigPath),
+// The contract module is loaded dynamically (see the import above), so its
+// type is `any` and these two combinators can't infer their generic
+// parameters from context — cast to `any` to skip that inference entirely
+// rather than fight it.
+const withWitnessesAny: any = CompiledContract.withWitnesses;
+const withCompiledFileAssetsAny: any = CompiledContract.withCompiledFileAssets;
+
+const compiledContract = (CompiledContract.make('proofpass', ProofPass.Contract) as any).pipe(
+  withWitnessesAny(witnesses),
+  withCompiledFileAssetsAny(zkConfigPath),
 );
+
+// This process's applicant identity for the session. Regenerated each run —
+// good enough for the demo (prove, then check, in the same session). A real
+// applicant would keep this secret key on their own device across sessions.
+const SESSION_SECRET_KEY = new Uint8Array(randomBytes(32));
 
 // ─── Providers ─────────────────────────────────────────────────────────────────
 
@@ -83,12 +108,14 @@ async function createProviders(walletCtx: WalletContext) {
   const zkConfigProvider = new NodeZkConfigProvider(zkConfigPath);
   const accountId = walletCtx.unshieldedKeystore.getBech32Address().toString();
 
+  const privateStateProvider = levelPrivateStateProvider<typeof PRIVATE_STATE_ID, ProofPassPrivateState>({
+    privateStateStoreName: 'proofpass-state',
+    accountId,
+    privateStoragePasswordProvider: () => privateStatePassword,
+  });
+
   return {
-    privateStateProvider: levelPrivateStateProvider({
-      privateStateStoreName: 'hello-world-state',
-      accountId,
-      privateStoragePasswordProvider: () => privateStatePassword,
-    }),
+    privateStateProvider,
     publicDataProvider: indexerPublicDataProvider(networkConfig.indexer, networkConfig.indexerWS),
     zkConfigProvider,
     proofProvider: httpClientProofProvider(networkConfig.proofServer, zkConfigProvider),
@@ -101,7 +128,7 @@ async function createProviders(walletCtx: WalletContext) {
 
 async function main() {
   console.log('\n╔══════════════════════════════════════════════════════════════╗');
-  console.log('║                   proofpass CLI                           ║');
+  console.log('║                   proofpass CLI                                ║');
   console.log('╚══════════════════════════════════════════════════════════════╝\n');
 
   const rl = createInterface({ input: stdin, output: stdout });
@@ -161,29 +188,47 @@ async function main() {
       compiledContract: compiledContract as any,
       contractAddress: deployment.address,
       privateStateId: PRIVATE_STATE_ID,
-      initialPrivateState: {},
+      initialPrivateState: createProofPassPrivateState(0n, SESSION_SECRET_KEY),
     });
 
     console.log('  ✅ Connected!\n');
+
+    providers.privateStateProvider.setContractAddress(deployment.address);
+
+    const applicantId = ProofPass.pureCircuits.applicantKey(SESSION_SECRET_KEY);
+    console.log(`  Your applicant id (pseudonymous, safe to share): ${Buffer.from(applicantId).toString('hex')}\n`);
 
     // Interactive CLI loop
     let running = true;
     while (running) {
       console.log('─── Menu ───────────────────────────────────────────────────────');
-      console.log('  1. Store a message');
-      console.log('  2. Read current message');
-      console.log('  3. Check wallet balance');
-      console.log('  4. Exit\n');
+      console.log('  1. Prove eligibility (applicant: enter birth date)');
+      console.log('  2. Check your eligibility result (verifier: reads pass/fail only)');
+      console.log('  3. Show required age range');
+      console.log('  4. Check wallet balance');
+      console.log('  5. Exit\n');
 
       const choice = await rl.question('  Your choice: ');
 
       switch (choice.trim()) {
         case '1': {
-          const message = await rl.question('  Enter your message: ');
-          console.log('\n  Submitting transaction (this may take 30-60 seconds)...');
+          const birthDateInput = await rl.question('  Enter your birth date (YYYY-MM-DD, e.g. 2000-06-15): ');
+          const birthDate = encodeIsoDate(birthDateInput.trim());
+          const currentDateInput = await rl.question(`  Current date (YYYY-MM-DD) [${todayIso()}]: `);
+          const currentDate = encodeIsoDate(currentDateInput.trim() || todayIso());
+
+          // Overwrite this session's private state with the entered birth
+          // date right before proving. Only this process ever sees it; the
+          // circuit discloses just the pass/fail boolean and applicant id.
+          await providers.privateStateProvider.set(
+            PRIVATE_STATE_ID,
+            createProofPassPrivateState(birthDate, SESSION_SECRET_KEY),
+          );
+
+          console.log('\n  Proving eligibility (this may take 30-60 seconds)...');
           try {
-            const tx = await deployed.callTx.storeMessage(message);
-            console.log(`\n  ✅ Message stored: "${message}"`);
+            const tx = await deployed.callTx.proveEligibility(currentDate);
+            console.log(`\n  ✅ Proof submitted. Your birth date was never sent anywhere.`);
             console.log(`  Transaction ID: ${tx.public.txId}`);
             console.log(`  Block height: ${tx.public.blockHeight}\n`);
           } catch (error) {
@@ -193,15 +238,22 @@ async function main() {
         }
 
         case '2': {
-          console.log('\n  Reading message from blockchain...');
+          console.log('\n  Reading eligibility result from the chain...');
           try {
             const contractState = await providers.publicDataProvider.queryContractState(deployment.address);
             if (contractState) {
-              const ledgerState = HelloWorld.ledger(contractState.data);
-              const message = Buffer.from(ledgerState.message).toString();
-              console.log(`\n  📋 Current message: "${message}"\n`);
+              const ledgerState = ProofPass.ledger(contractState.data);
+              if (!ledgerState.hasResult) {
+                console.log('\n  📋 No proof on file yet — run option 1 first.\n');
+              } else {
+                const recordedApplicantId = Buffer.from(ledgerState.applicantId).toString('hex');
+                const yours = Buffer.from(applicantId).toString('hex') === recordedApplicantId;
+                console.log(`\n  📋 Last recorded applicant: ${recordedApplicantId}${yours ? ' (you)' : ' (not you — someone else proved most recently)'}`);
+                console.log(`  📋 Eligibility: ${ledgerState.eligible ? '✅ PASS' : '❌ FAIL'}`);
+                console.log('     (birth year was never disclosed to reach this result)\n');
+              }
             } else {
-              console.log('\n  📋 No message found (contract state empty)\n');
+              console.log('\n  📋 No contract state found.\n');
             }
           } catch (error) {
             console.error('\n  ❌ Failed:', error instanceof Error ? error.message : error);
@@ -210,6 +262,22 @@ async function main() {
         }
 
         case '3': {
+          console.log('\n  Reading required age range from the chain...');
+          try {
+            const contractState = await providers.publicDataProvider.queryContractState(deployment.address);
+            if (contractState) {
+              const ledgerState = ProofPass.ledger(contractState.data);
+              console.log(`\n  📋 Required age range: ${ledgerState.minAge}–${ledgerState.maxAge}\n`);
+            } else {
+              console.log('\n  📋 No contract state found.\n');
+            }
+          } catch (error) {
+            console.error('\n  ❌ Failed:', error instanceof Error ? error.message : error);
+          }
+          break;
+        }
+
+        case '4': {
           console.log('\n  Checking balance...');
           const currentState = await walletCtx.wallet.waitForSyncedState();
           const currentBalance = currentState.unshielded.balances[unshieldedToken().raw] ?? 0n;
@@ -219,13 +287,13 @@ async function main() {
           break;
         }
 
-        case '4':
+        case '5':
           running = false;
           console.log('\n  👋 Goodbye!\n');
           break;
 
         default:
-          console.log('\n  ❌ Invalid choice. Please enter 1-4.\n');
+          console.log('\n  ❌ Invalid choice. Please enter 1-5.\n');
       }
     }
 

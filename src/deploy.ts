@@ -19,13 +19,22 @@ import { indexerPublicDataProvider } from '@midnight-ntwrk/midnight-js-indexer-p
 import { levelPrivateStateProvider } from '@midnight-ntwrk/midnight-js-level-private-state-provider';
 import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config-provider';
 import { CompiledContract } from '@midnight-ntwrk/midnight-js-protocol/compact-js';
+import { createProofPassPrivateState, witnesses } from '../contracts/witnesses';
 
 // @ts-expect-error Required for wallet sync
 globalThis.WebSocket = WebSocket;
 
 // Identifier under which this contract's private state is stored. The
-// hello-world contract has no witnesses, so its private state is empty ({}).
-const PRIVATE_STATE_ID = 'helloWorldPrivateState';
+// deploying wallet never calls proveEligibility itself, so it's seeded with
+// a placeholder — the CLI overwrites it with the real applicant data before
+// proving.
+const PRIVATE_STATE_ID = 'proofpassPrivateState';
+
+// Age range the verifier requires, set at deploy time. Override with
+// MIN_AGE / MAX_AGE (e.g. a 21+ demo, or an 18-65 concert ticket demo).
+// MAX_AGE defaults high enough to be a no-op ceiling unless overridden.
+const MIN_AGE = BigInt(process.env.MIN_AGE?.trim() || '18');
+const MAX_AGE = BigInt(process.env.MAX_AGE?.trim() || '120');
 
 // ─── Network configuration ─────────────────────────────────────────────────────
 //
@@ -71,7 +80,7 @@ async function waitForProofServer(maxAttempts = 60, delayMs = 2000): Promise<boo
 // ─── Compiled contract loading ─────────────────────────────────────────────────
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const zkConfigPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'hello-world');
+const zkConfigPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'proofpass');
 const contractPath = path.join(zkConfigPath, 'contract', 'index.js');
 
 if (!fs.existsSync(contractPath)) {
@@ -79,11 +88,18 @@ if (!fs.existsSync(contractPath)) {
   process.exit(1);
 }
 
-const HelloWorld = await import(pathToFileURL(contractPath).href);
+const ProofPass = await import(pathToFileURL(contractPath).href);
 
-const compiledContract = CompiledContract.make('hello-world', HelloWorld.Contract).pipe(
-  CompiledContract.withVacantWitnesses,
-  CompiledContract.withCompiledFileAssets(zkConfigPath),
+// The contract module is loaded dynamically (see the import above), so its
+// type is `any` and these two combinators can't infer their generic
+// parameters from context — cast to `any` to skip that inference entirely
+// rather than fight it.
+const withWitnessesAny: any = CompiledContract.withWitnesses;
+const withCompiledFileAssetsAny: any = CompiledContract.withCompiledFileAssets;
+
+const compiledContract = (CompiledContract.make('proofpass', ProofPass.Contract) as any).pipe(
+  withWitnessesAny(witnesses),
+  withCompiledFileAssetsAny(zkConfigPath),
 );
 
 // ─── Providers ─────────────────────────────────────────────────────────────────
@@ -117,7 +133,7 @@ async function createProviders(walletCtx: WalletContext) {
 
   return {
     privateStateProvider: levelPrivateStateProvider({
-      privateStateStoreName: 'hello-world-state',
+      privateStateStoreName: 'proofpass-state',
       accountId,
       privateStoragePasswordProvider: () => privateStatePassword,
     }),
@@ -289,16 +305,18 @@ async function main() {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       // Midnight.js 4.1.x supplies private state via privateStateId +
-      // initialPrivateState (empty here — the hello-world contract has no
-      // witnesses). args is the contract constructor's arguments: empty for
-      // hello-world's no-arg constructor. (Statically-typed contracts can omit
-      // args entirely; this script loads the contract dynamically, so the
-      // conditional args type widens to any[] and an explicit [] is required.)
+      // initialPrivateState. args is the contract constructor's arguments:
+      // [minimumAge] here. The deploying wallet never calls proveEligibility
+      // itself, so its private state is a placeholder — the CLI overwrites
+      // it with real applicant data before proving. (Statically-typed
+      // contracts can omit args entirely; this script loads the contract
+      // dynamically, so the conditional args type widens to any[] and an
+      // explicit array is required.)
       deployed = await deployContract(providers, {
         compiledContract: compiledContract as any,
-        args: [],
+        args: [MIN_AGE, MAX_AGE],
         privateStateId: PRIVATE_STATE_ID,
-        initialPrivateState: {},
+        initialPrivateState: createProofPassPrivateState(0n, new Uint8Array(32)),
       });
       break;
     } catch (err: any) {

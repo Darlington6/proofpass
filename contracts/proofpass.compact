@@ -1,0 +1,65 @@
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+// ProofPass — prove age is within a public [minAge, maxAge] range without
+// ever disclosing a birth date. Modeled as the "Integrate Midnight" upgrade
+// for an existing rental/job/event application flow that used to collect a
+// raw date of birth.
+//
+// Dates are encoded as plain YYYYMMDD integers (e.g. 19901129 for
+// 1990-11-29). Subtracting whole years from a YYYYMMDD value by subtracting
+// N * 10000 shifts only the year digits and leaves month/day untouched, so
+// integer comparison on these encoded dates matches real calendar order —
+// exact to the day, not just the year (the one gap: Feb 29 birthdates
+// compared against a non-leap cutoff year land on a nonexistent calendar
+// date, which is a acceptable known edge case here).
+//
+// Single-session model (like the bulletin-board example's one-post-at-a-time
+// design): each proveEligibility call overwrites the last result. A
+// verifier reads back only the pass/fail boolean and the pseudonymous
+// applicant id — never the birth date that produced it.
+
+// Age range required to pass, set once at deploy time by the verifier
+// (e.g. the rental site, or a concert with both a minimum and maximum age).
+export ledger minAge: Uint<16>;
+export ledger maxAge: Uint<16>;
+
+// The most recent applicant's pseudonymous id (derived from their local
+// secret key) and whether they passed. Never keyed by, or containing,
+// their actual birth date.
+export ledger applicantId: Bytes<32>;
+export ledger eligible: Boolean;
+export ledger hasResult: Boolean;
+
+constructor(minimumAge: Uint<16>, maximumAge: Uint<16>) {
+  assert(minimumAge <= maximumAge, "minimumAge must be <= maximumAge");
+  minAge = disclose(minimumAge);
+  maxAge = disclose(maximumAge);
+}
+
+// Private witnesses — implemented off-chain in witnesses.ts. Their values
+// never appear in the transaction transcript or on the ledger; only values
+// explicitly wrapped in disclose() below do.
+witness localBirthDate(): Uint<32>;
+witness localSecretKey(): Bytes<32>;
+
+// The applicant proves their birth date (YYYYMMDD) implies minAge <= age <=
+// maxAge as of currentDate (also YYYYMMDD), and records only the resulting
+// boolean against their pseudonymous applicant id. birthDate is read
+// locally and never leaves this circuit.
+export circuit proveEligibility(currentDate: Uint<32>): [] {
+  const maxAgeDays = (maxAge as Uint<32>) * 10000;
+  assert(currentDate >= maxAgeDays, "currentDate must be at least maxAge years after year 0");
+  const latestBirthDate = currentDate - (minAge as Uint<32>) * 10000;
+  const earliestBirthDate = currentDate - maxAgeDays;
+  const birthDate = localBirthDate();
+  const passed = birthDate <= latestBirthDate && birthDate >= earliestBirthDate;
+  applicantId = disclose(applicantKey(localSecretKey()));
+  eligible = disclose(passed);
+  hasResult = true;
+}
+
+export circuit applicantKey(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "proofpass:applicant:"), sk]);
+}

@@ -48,6 +48,7 @@ coverage/
 
 # Private state
 *-state/
+midnight-level-db/
 
 # Temporary files
 tmp/

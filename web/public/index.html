@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ProofPass — Rental Application Demo</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-border: #262b36;
+    --text: #e8eaf0;
+    --muted: #9099ab;
+    --before: #e5484d;
+    --before-bg: #2a1516;
+    --after: #30a46c;
+    --after-bg: #10261c;
+    --accent: #6e56cf;
+    --mono: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    padding: 32px 20px 60px;
+  }
+  header { text-align: center; max-width: 720px; margin: 0 auto 36px; }
+  header h1 { font-size: 28px; margin: 0 0 8px; }
+  header p { color: var(--muted); font-size: 15px; line-height: 1.5; margin: 0; }
+  .badge {
+    display: inline-block; font-size: 12px; font-weight: 600; letter-spacing: 0.02em;
+    padding: 4px 10px; border-radius: 999px; background: rgba(110,86,207,0.15);
+    color: #b9a9f0; margin-bottom: 14px;
+  }
+  .grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 24px;
+    max-width: 980px; margin: 0 auto;
+  }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: 14px; padding: 22px; display: flex; flex-direction: column; gap: 14px;
+  }
+  .panel-label {
+    font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  }
+  .panel.before .panel-label { color: var(--before); }
+  .panel.after .panel-label { color: var(--after); }
+  .panel h2 { margin: 0; font-size: 19px; }
+  .panel .sub { color: var(--muted); font-size: 13.5px; line-height: 1.5; margin: -6px 0 4px; }
+  label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px; }
+  input {
+    width: 100%; background: #0d0f14; border: 1px solid var(--panel-border);
+    color: var(--text); border-radius: 8px; padding: 10px 12px; font-size: 14px;
+    margin-bottom: 12px;
+  }
+  input:focus { outline: none; border-color: var(--accent); }
+  button {
+    border: none; border-radius: 8px; padding: 11px 16px; font-size: 14px; font-weight: 600;
+    cursor: pointer; transition: opacity 0.15s;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .panel.before button { background: var(--before); color: white; }
+  .panel.after button { background: var(--after); color: white; }
+  button:hover:not(:disabled) { opacity: 0.88; }
+  .result {
+    border-radius: 10px; padding: 14px; font-size: 13.5px; line-height: 1.6;
+    display: none;
+  }
+  .result.show { display: block; }
+  .result.leak { background: var(--before-bg); border: 1px solid #4a2224; color: #ffb4b8; }
+  .result.safe { background: var(--after-bg); border: 1px solid #1e4a34; color: #8be0b3; }
+  .result code { font-family: var(--mono); background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 4px; }
+  .result .line { margin-bottom: 4px; }
+  .result .line:last-child { margin-bottom: 0; }
+  .spinner {
+    display: inline-block; width: 13px; height: 13px; border: 2px solid rgba(255,255,255,0.3);
+    border-top-color: white; border-radius: 50%; animation: spin 0.7s linear infinite; margin-right: 6px;
+    vertical-align: -2px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .info {
+    max-width: 980px; margin: 40px auto 0; background: var(--panel);
+    border: 1px solid var(--panel-border); border-radius: 14px; padding: 26px 28px;
+  }
+  .info h2 { margin: 0 0 6px; font-size: 19px; }
+  .info > .sub { color: var(--muted); font-size: 13.5px; line-height: 1.5; margin: 0 0 20px; max-width: 640px; }
+  .steps {
+    list-style: none; margin: 0; padding: 0; counter-reset: step;
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px;
+  }
+  @media (max-width: 760px) { .steps { grid-template-columns: 1fr; } }
+  .steps li { counter-increment: step; }
+  .steps .n {
+    display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px;
+    border-radius: 50%; background: rgba(110,86,207,0.18); color: #b9a9f0; font-size: 12px; font-weight: 700;
+    margin-bottom: 8px;
+  }
+  .steps .n::before { content: counter(step); }
+  .steps h3 { margin: 0 0 4px; font-size: 14px; }
+  .steps p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+  .info-note {
+    margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--panel-border);
+    color: var(--muted); font-size: 13px; line-height: 1.6;
+  }
+  .info-note strong { color: var(--text); }
+  footer {
+    max-width: 980px; margin: 30px auto 0; text-align: center; color: var(--muted); font-size: 12.5px;
+  }
+  footer span { font-family: var(--mono); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="badge">Integrate Midnight — before / after</div>
+  <h1>ProofPass</h1>
+  <p>A rental application, upgraded. The left form is how it worked yesterday. The right form proves the same eligibility with Midnight's zero-knowledge circuits — the applicant's birth date never reaches a server or a chain, only a pass/fail proof does.</p>
+</header>
+
+<div class="grid">
+
+  <div class="panel before">
+    <div class="panel-label">Before</div>
+    <h2>Sunrise Rentals — Standard Application</h2>
+    <div class="sub">Collects and stores your exact date of birth to confirm you're old enough to rent.</div>
+    <div>
+      <label for="b-name">Full name</label>
+      <input id="b-name" placeholder="Jordan Smith" />
+      <label for="b-dob">Date of birth</label>
+      <input id="b-dob" type="date" />
+    </div>
+    <button id="b-submit">Submit application</button>
+    <div class="result leak" id="b-result"></div>
+  </div>
+
+  <div class="panel after">
+    <div class="panel-label">After — Powered by ProofPass</div>
+    <h2>Sunrise Rentals — ProofPass Application</h2>
+    <div class="sub" id="a-threshold">Confirms you meet the required age with a zero-knowledge proof. Your birth date is used once, locally, to build the proof — never stored.</div>
+    <div>
+      <label for="a-name">Full name</label>
+      <input id="a-name" placeholder="Jordan Smith" />
+      <label for="a-dob">Date of birth</label>
+      <input id="a-dob" type="date" />
+    </div>
+    <button id="a-submit">Verify eligibility with ProofPass</button>
+    <div class="result safe" id="a-result"></div>
+  </div>
+
+</div>
+
+<section class="info">
+  <h2>How another company would integrate this</h2>
+  <p class="sub">This page proves the pattern works. Adopting it for a real product means doing these four things — it's a real, bounded engineering task, not a plug-in.</p>
+  <ol class="steps">
+    <li>
+      <div class="n"></div>
+      <h3>Decide the policy</h3>
+      <p>What threshold (or range) to require, and what private fact it's checked against — age here, but the same shape fits income, credentials, or membership.</p>
+    </li>
+    <li>
+      <div class="n"></div>
+      <h3>Deploy their own contract</h3>
+      <p>The same Compact contract, deployed to a real Midnight network with their own threshold baked in — not a shared instance with other companies.</p>
+    </li>
+    <li>
+      <div class="n"></div>
+      <h3>Swap the frontend step</h3>
+      <p>Replace the raw data field with a proving step, using Midnight's wallet connector so the proof is generated on the applicant's own device.</p>
+    </li>
+    <li>
+      <div class="n"></div>
+      <h3>Swap the backend check</h3>
+      <p>Read the on-chain pass/fail result for the applicant's id instead of a stored value in their own database.</p>
+    </li>
+  </ol>
+  <div class="info-note">
+    <strong>Scope, honestly:</strong> the age check on this page is one example of the pattern (private witness → circuit logic → disclose only the derived result), not the limit of it. The same shape proves an income threshold, a credential, or membership without writing a fundamentally different contract. What's demoed here is deliberately narrow — a single check, a single-session contract — to keep the core claim easy to verify end-to-end within a hackathon weekend.
+  </div>
+</section>
+
+<footer>
+  Local Midnight devnet · contract <span id="f-addr">…</span> · required age <span id="f-age">…</span>
+</footer>
+
+<script>
+// A maxAge this high is treated as "no real ceiling" for display purposes —
+// the contract still enforces it, it's just not a meaningful restriction at
+// this deployment's default. Redeploy with MAX_AGE set lower (e.g. an
+// 18-65 event ticket policy) to see the range enforced both ways.
+const UNBOUNDED_MAX_AGE = 100;
+
+async function loadStatus() {
+  try {
+    const res = await fetch('/api/status');
+    const data = await res.json();
+    const maxAge = parseInt(data.maxAge, 10);
+    const ranged = maxAge < UNBOUNDED_MAX_AGE;
+    const rangeLabel = ranged ? `${data.minAge}–${data.maxAge}` : `${data.minAge}+`;
+    document.getElementById('f-addr').textContent = data.contractAddress.slice(0, 16) + '…';
+    document.getElementById('f-age').textContent = rangeLabel;
+    document.getElementById('a-threshold').textContent = ranged
+      ? `Confirms your age falls between ${data.minAge} and ${data.maxAge} without revealing your birth date. Used once, locally, to build the proof — never stored.`
+      : `Confirms you're at least ${data.minAge} without revealing your birth date. Used once, locally, to build the proof — never stored.`;
+  } catch (e) {
+    document.getElementById('f-addr').textContent = 'unavailable';
+  }
+}
+loadStatus();
+
+document.getElementById('b-submit').addEventListener('click', () => {
+  const name = document.getElementById('b-name').value || 'Jordan Smith';
+  const dob = document.getElementById('b-dob').value || '1990-05-14';
+  const el = document.getElementById('b-result');
+  el.className = 'result leak show';
+  el.innerHTML = `
+    <div class="line">✅ Application received for <code>${name}</code>.</div>
+    <div class="line">📋 Stored on our server: date of birth <code>${dob}</code>.</div>
+    <div class="line">This record — your exact birth date — now lives in a database you don't control, for as long as they keep it.</div>
+  `;
+});
+
+document.getElementById('a-submit').addEventListener('click', async () => {
+  const btn = document.getElementById('a-submit');
+  const el = document.getElementById('a-result');
+  const dob = document.getElementById('a-dob').value;
+  if (!dob) {
+    el.className = 'result leak show';
+    el.innerHTML = '<div class="line">Enter a valid date of birth.</div>';
+    return;
+  }
+  btn.disabled = true;
+  el.className = 'result safe show';
+  el.innerHTML = '<div class="line"><span class="spinner"></span>Generating zero-knowledge proof (30–60s)…</div>';
+  try {
+    const res = await fetch('/api/prove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ birthDate: dob }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Proof failed');
+    el.innerHTML = `
+      <div class="line">${data.eligible ? '✅ Eligible' : '❌ Not eligible'} — proof verified on-chain, exact to the day.</div>
+      <div class="line">📋 Recorded: <code>${data.eligible}</code> for applicant <code>${data.applicantId.slice(0, 12)}…</code></div>
+      <div class="line">Your date of birth (${dob}) was read once to build this proof, then discarded. It was never stored, logged, or put on the chain.</div>
+      <div class="line">tx <code>${data.txId.slice(0, 18)}…</code></div>
+    `;
+    loadStatus();
+  } catch (err) {
+    el.innerHTML = `<div class="line">❌ ${err.message}</div>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+
+</body>
+</html>
